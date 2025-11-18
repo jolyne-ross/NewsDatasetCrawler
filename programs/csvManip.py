@@ -10,5 +10,7 @@ def sub_sample(args, data: pd.DataFrame) -> pd.DataFrame:
 
 def main(args, callback):
     data = pd.read_csv(args.input)
-    data = data.query(args.pd_query)
+    if args.pd_query != None: data = data.query(args.pd_query)
+
     callback(args, data).to_csv(args.output, columns=args.columns)
+        

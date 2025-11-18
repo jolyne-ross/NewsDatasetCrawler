@@ -1,5 +1,6 @@
 import argparse
 import pathlib
+from sys import exit
 from programs import csvManip, getArticles
 
 def build_parser():
@@ -38,9 +39,9 @@ def build_parser():
 
     csv_clean_data = csv_subparsers.add_parser("clean-data", help="Removes Duplicate articles and cleans up the data")
 
-    p_csv_manip = subparsers.add_parser("get-articles", help="Downloads the Articles from the given URL")
-    p_csv_manip.add_argument("--csv", required=True, help="Media Cloud CSV File for input")
-    p_csv_manip.set_defaults(func=getArticles.main)
+    p_get_articles = subparsers.add_parser("get-articles", help="Downloads the Articles from the given URL")
+    p_get_articles.add_argument("--csv", required=True, help="Media Cloud CSV File for input")
+    p_get_articles.set_defaults(func=getArticles.main)
 
     return parser
 
@@ -48,6 +49,9 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    args.func(args, args.callback)
+    try: args.func(args, args.callback)
+    except Exception as e:
+        print(e.with_traceback())
+        parser.print_help()
 
 main()
