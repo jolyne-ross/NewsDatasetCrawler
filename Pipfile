@@ -6,6 +6,8 @@ name = "pypi"
 [packages]
 argparse = "*"
 pathlib = "*"
+pandas = "*"
+aiohttp = "*"
 
 [dev-packages]
 
