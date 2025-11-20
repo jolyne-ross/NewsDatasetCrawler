@@ -8,6 +8,8 @@ argparse = "*"
 pathlib = "*"
 pandas = "*"
 aiohttp = "*"
+aiofiles = "*"
+trafilatura = "*"
 
 [dev-packages]
 

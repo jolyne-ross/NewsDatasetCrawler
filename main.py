@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import pathlib
 from sys import exit
@@ -45,11 +46,15 @@ def build_parser():
 
     ## getter args
     p_get_articles = subparsers.add_parser("get-articles", help="Downloads the Articles from the given URL")
-    p_get_articles.add_argument("-i", "--input", required=True, help="Media Cloud CSV File for input")
-    p_get_articles.add_argument("-o", "--output", required=True, help="Where to write output (does not maintain order)")
-    p_get_articles.add_argument("--con-gets", default=50, help="# of concurrent HTTP Get Requests from given URLs")
-    p_get_articles.add_argument("--cores", default=4, help="# of cores to use for analysis step")
-    p_get_articles.set_defaults(func=getArticles.main)
+    p_get_articles.add_argument("-i", "--input", required=True, type=pathlib.Path, help="Media Cloud CSV File for input")
+    p_get_articles.add_argument("-o", "--output", required=True, type=pathlib.Path, help="Where to write output (does not maintain order)")
+    p_get_articles.add_argument("-eo", "--error-output", type=pathlib.Path, help="Where to output our errors")
+    p_get_articles.add_argument("-cg", "--con-gets", default=50, type=int, help="# of concurrent HTTP Get Requests from given URLs (default 50)")
+    p_get_articles.add_argument("-c", "--cores", default=4, type=int, help="# of cores to use for analysis step (default 4)")
+    p_get_articles.add_argument("-cd", "--con_dom", default=3, type=int, help="# of concurrent HTTP Gets per domain (default 3)")
+    p_get_articles.add_argument("-d", "--min_del", default=0.25, type=float, help="Minimun delay for requets per domain in seconds (default 0.2, 0 to disable)")
+
+    p_get_articles.set_defaults(func=getArticles.main, callback=None)
 
     return parser
 
@@ -57,10 +62,7 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    try: args.func(args, args.callback)
-    except Exception as e:
-        print(e)
-        parser.print_help()
+    args.func(args, args.callback)
 
 if __name__ == "__main__":
     main()
