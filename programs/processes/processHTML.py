@@ -1,8 +1,28 @@
 import re
 import unicodedata
-from json import loads
-from trafilatura import extract
+import spacy
+from collections import Counter
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from trafilatura import bare_extraction
+
+NLP = None
+_SENTIMENT = None
+
+## callable given to ProcessPoolExecutor to call on creation of workers
+def init_worker():
+    global NLP, _SENTIMENT
+    if NLP == None:
+        NLP = spacy.load("en_core_web_sm", disable=["textcat"])
+        NLP.add_pipe("sentencizer")
+    
+    if _SENTIMENT == None:
+        _SENTIMENT = SentimentIntensityAnalyzer()
+
+def preload_models():
+    global NLP, _SENTIMENT
+    NLP = spacy.load("en_core_web_sm", disable=["textcat"])
+    NLP.add_pipe("sentencizer")
+    _SENTIMENT = SentimentIntensityAnalyzer()
 
 def normalize_unicode(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
@@ -10,40 +30,27 @@ def normalize_unicode(s: str) -> str:
     return s
 
 ## cpu bound synchronous processing.
-def process_html(html: str, article: dict) -> dict:
+def process_html(html: str) -> dict:
     ## raw retrieval && error handling
     try:
         data = bare_extraction(filecontent=html, with_metadata=True)
     except Exception as e:
         return {
             "ok": False,
-            "id": article['id'],
-            "media_url": article['media_url'],
-            "url": article['url'],
-            'title': article['title'],
-            "publish_date": article['publish_date'],
-            "error_type": "extract_exception",
+            "error_type": "extraction",
             "error": str(e)
         }
 
     if data == None: return {
         "ok": False,
-        "id": article['id'],
-        "media_url": article['media_url'],
-        "url": article['url'],
-        'title': article['title'],
-        "publish_date": article['publish_date'],
-        "error_type": "extract_none"
+        "error_type": "extraction",
+        "error": "data_none"
     }
 
     if data.text == None or data.text == "": return {
         "ok": False,
-        "id": article['id'],
-        "media_url": article['media_url'],
-        "url": article['url'],
-        'title': article['title'],
-        "publish_date": article['publish_date'],
-        "error_type": "text_none"
+        "error_type": "extraction",
+        "error": "text_none"
     }
 
     ## get text
@@ -73,11 +80,6 @@ def process_html(html: str, article: dict) -> dict:
 
     return {
         "ok": True,
-        "id": article['id'],
-        "media_url": article['media_url'],
-        "url": article['url'],
-        'title': article['title'],
-        "publish_date": article['publish_date'],
         "trafilatura_data": {
             "site_name": data.sitename or "",
             "author": data.author or "",

@@ -5,9 +5,10 @@ import aiofiles
 import json
 import time
 import os
+import platform
 from concurrent.futures import ProcessPoolExecutor
 from pandas import read_csv
-from programs.processes.processHTML import process_html
+from programs.processes.processHTML import process_html, init_worker, preload_models
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0",
@@ -51,9 +52,11 @@ async def writer_task(output_path: str, file_name: str, queue: asyncio.Queue):
 async def fetch_process_write(article: dict, session: aiohttp.ClientSession, pool: ProcessPoolExecutor, writer_queue: asyncio.Queue, error_queue: asyncio.Queue, delay: float):
     ## fetches our raw html from the url using our session
     html = await fetch_html(url=article["url"], domain=article["media_url"], session=session, min_delay=delay)
-    if html == None: return None
+    if html == None: 
+        await error_queue.put({**article, "error_type": "http", "error": "html_none"})
+        return
     if isinstance(html, aiohttp.ClientResponseError): 
-        await error_queue.put({"ok": False, **article, "status_code": html.status, "message": html.message})
+        await error_queue.put({**article, "error_type": "http", "error": {"status_code": html.status, "message": html.message, "headers": html.headers}})
         return
 
     assert isinstance(html, str)
@@ -61,12 +64,19 @@ async def fetch_process_write(article: dict, session: aiohttp.ClientSession, poo
     ## grabs our loop set up back in main()
     loop = asyncio.get_running_loop()
     ## runs our synchronous function w/ our pool
-    result = await loop.run_in_executor(pool, process_html, html, article)
-    if result["ok"]: await writer_queue.put(result)
-    else: await error_queue.put(result)
+    result = await loop.run_in_executor(pool, process_html, html)
+
+    if result["ok"]: 
+        del result["ok"]
+        result = article | result
+        await writer_queue.put(result)
+    else: 
+        del result["ok"]
+        result = article | result
+        await error_queue.put(result)
 
 domain_limits = {}
-def get_domain_sem(media_url: str, lim: int):
+def get_domain_sem(media_url: str, lim: int) -> asyncio.Semaphore:
     if media_url not in domain_limits: domain_limits[media_url] = asyncio.Semaphore(lim)
     return domain_limits[media_url]
 
@@ -82,7 +92,7 @@ async def main_async(args):
     error_writer = asyncio.create_task(writer_task(args.output, "errors.jsonl", error_queue))
 
     ## create our worker pool (this will manage out cpu bound processing!!)
-    with ProcessPoolExecutor(max_workers=args.cores) as pool:
+    with ProcessPoolExecutor(max_workers=args.cores, initializer=init_worker) as pool:
         ## create out http session which will manage our i/o bound getting
         async with aiohttp.ClientSession() as session:
             http_sem = asyncio.Semaphore(args.con_gets) ## num of concurrent url gets
@@ -111,4 +121,5 @@ async def main_async(args):
     print(f"[DONE]")
 
 def main(args, callback):
+    if platform.system() == "Linux": preload_models()
     asyncio.run(main_async(args))
