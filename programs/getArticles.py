@@ -9,7 +9,7 @@ import platform
 import pyarrow as pa
 import pyarrow.parquet as pq
 from concurrent.futures import ProcessPoolExecutor
-from pandas import read_csv, DataFrame
+from pandas import read_csv
 from programs.processes.processHTML import process_html, init_worker, preload_models
 
 HEADERS = {
@@ -68,9 +68,8 @@ def to_arrow(value):
 def normalize_row(row: dict):
     return {k: to_arrow(v) for k, v in row.items()}
 
-## writer task for parquet file format; planning to implement chunking for working w/ larger datasets
+## writer task for parquet file format
 async def writer_task_parquet(output_path: str, file_name: str, queue: asyncio.Queue, flush_every: int = 100):
-
     ## set up task
     os.makedirs(output_path, exist_ok=True)
     parquet_path = os.path.join(output_path, file_name)
@@ -92,23 +91,22 @@ async def writer_task_parquet(output_path: str, file_name: str, queue: asyncio.Q
         if row == None: break ## shutdown code
 
         buffer.append(normalize_row(row))
-
         if schema == None: schema = pa.Table.from_pylist([buffer[0]]).schema
 
-        if len(buffer) >= flush_every: writer =_write_chunk()
+        if len(buffer) >= flush_every: _write_chunk()
     
-    if buffer: writer =_write_chunk()
+    if buffer: _write_chunk()
     if writer: writer.close()
 
 ## i/o & cpu controller function
-async def fetch_process_write(article: dict, session: aiohttp.ClientSession, pool: ProcessPoolExecutor, writer_queue: asyncio.Queue, error_queue: asyncio.Queue, delay: float):
+async def fetch_process_write(article: dict, session: aiohttp.ClientSession, pool: ProcessPoolExecutor, writer_queue: asyncio.Queue, error_queue: asyncio.Queue, text_queue: asyncio.Queue, delay: float):
     ## fetches our raw html from the url using our session
     html = await fetch_html(url=article["url"], domain=article["media_url"], session=session, min_delay=delay)
     if html == None: 
         await error_queue.put({**article, "error_type": "http", "error": "html_none"})
         return
     if isinstance(html, aiohttp.ClientResponseError): 
-        await error_queue.put({**article, "error_type": "http", "error": {"status_code": html.status, "message": html.message, "headers": html.headers}})
+        await error_queue.put({**article, "error_type": "http", "error": {"status_code": html.status, "message": html.message}})
         return
 
     assert isinstance(html, str)
@@ -118,10 +116,15 @@ async def fetch_process_write(article: dict, session: aiohttp.ClientSession, poo
     ## runs our synchronous function w/ our pool
     result = await loop.run_in_executor(pool, process_html, html)
 
+    if result["text"]:
+        just_text = {**article, "text": result["text"]}
+        await text_queue.put(just_text)
+
     if result["ok"]: 
         del result["ok"]
         result = article | result
         await writer_queue.put(result)
+
     else: 
         del result["ok"]
         result = article | result
@@ -138,7 +141,10 @@ async def main_async(args):
     articles = data.to_dict("records")
 
     writer_queue = asyncio.Queue() ## refresh writer queue
-    writer = asyncio.create_task(writer_task_parquet(args.output, "output.jsonl", writer_queue)) ## set up task
+    writer = asyncio.create_task(writer_task_parquet(args.output, "output.parquet", writer_queue)) ## set up task
+
+    text_queue = asyncio.Queue()
+    text_writer = asyncio.create_task(writer_task(args.output, "cleaned_texts.jsonl", text_queue))
 
     error_queue = asyncio.Queue()
     error_writer = asyncio.create_task(writer_task(args.output, "errors.jsonl", error_queue))
@@ -160,6 +166,7 @@ async def main_async(args):
                         pool=pool, 
                         writer_queue=writer_queue, 
                         error_queue=error_queue,
+                        text_queue=text_queue,
                         delay=args.min_del
                     )
             
@@ -168,8 +175,8 @@ async def main_async(args):
             await asyncio.gather(*tasks)
 
     ## Puts in a final shutdown signal for the writers (None) and waits for the task to fully finish
-    await asyncio.gather(writer_queue.put(None), error_queue.put(None))
-    await asyncio.gather(writer, error_writer)
+    await asyncio.gather(writer_queue.put(None), error_queue.put(None), text_queue.put(None))
+    await asyncio.gather(writer, error_writer, text_writer)
     print(f"[DONE]")
 
 def main(args, callback):
