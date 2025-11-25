@@ -10,6 +10,9 @@ pandas = "*"
 aiohttp = "*"
 aiofiles = "*"
 trafilatura = "*"
+vadersentiment = "*"
+spacy = "*"
+pyarrow = "*"
 
 [dev-packages]
 

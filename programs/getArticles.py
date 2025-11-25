@@ -6,8 +6,10 @@ import json
 import time
 import os
 import platform
+import pyarrow as pa
+import pyarrow.parquet as pq
 from concurrent.futures import ProcessPoolExecutor
-from pandas import read_csv
+from pandas import read_csv, DataFrame
 from programs.processes.processHTML import process_html, init_worker, preload_models
 
 HEADERS = {
@@ -48,6 +50,56 @@ async def writer_task(output_path: str, file_name: str, queue: asyncio.Queue):
             await file.write(line+"\n")
             queue.task_done()
 
+def to_arrow(value):
+    if value is None: return None
+
+    ## base types
+    if isinstance(value, (str, int, float, bool)): return value
+
+    ## recursive call on list
+    if isinstance(value, list): return [to_arrow(v) for v in value]
+
+    ## recursive call on dict
+    if isinstance(value, dict): return {k: to_arrow(v) for k, v in value.items()}
+
+    ## fallback to string conversion
+    return str(value)
+
+def normalize_row(row: dict):
+    return {k: to_arrow(v) for k, v in row.items()}
+
+## writer task for parquet file format; planning to implement chunking for working w/ larger datasets
+async def writer_task_parquet(output_path: str, file_name: str, queue: asyncio.Queue, flush_every: int = 100):
+
+    ## set up task
+    os.makedirs(output_path, exist_ok=True)
+    parquet_path = os.path.join(output_path, file_name)
+    buffer = []
+    schema = None
+    writer = None
+
+    def _write_chunk():
+        nonlocal writer, buffer
+        if not buffer: return
+
+        table = pa.Table.from_pylist(buffer, schema=schema)
+        if writer == None: writer = pq.ParquetWriter(parquet_path, schema, use_dictionary=True, compression="SNAPPY")
+        writer.write_table(table)
+        buffer = []
+
+    while True:
+        row = await queue.get()
+        if row == None: break ## shutdown code
+
+        buffer.append(normalize_row(row))
+
+        if schema == None: schema = pa.Table.from_pylist([buffer[0]]).schema
+
+        if len(buffer) >= flush_every: writer =_write_chunk()
+    
+    if buffer: writer =_write_chunk()
+    if writer: writer.close()
+
 ## i/o & cpu controller function
 async def fetch_process_write(article: dict, session: aiohttp.ClientSession, pool: ProcessPoolExecutor, writer_queue: asyncio.Queue, error_queue: asyncio.Queue, delay: float):
     ## fetches our raw html from the url using our session
@@ -86,7 +138,7 @@ async def main_async(args):
     articles = data.to_dict("records")
 
     writer_queue = asyncio.Queue() ## refresh writer queue
-    writer = asyncio.create_task(writer_task(args.output, "output.jsonl", writer_queue)) ## set up task
+    writer = asyncio.create_task(writer_task_parquet(args.output, "output.jsonl", writer_queue)) ## set up task
 
     error_queue = asyncio.Queue()
     error_writer = asyncio.create_task(writer_task(args.output, "errors.jsonl", error_queue))
