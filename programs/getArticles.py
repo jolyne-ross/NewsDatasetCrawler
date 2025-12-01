@@ -102,19 +102,21 @@ async def writer_task_parquet(output_path: str, file_name: str, queue: asyncio.Q
 async def fetch_process_write(article: dict, session: aiohttp.ClientSession, pool: ProcessPoolExecutor, writer_queue: asyncio.Queue, error_queue: asyncio.Queue, text_queue: asyncio.Queue, delay: float):
     ## fetches our raw html from the url using our session
     html = await fetch_html(url=article["url"], domain=article["media_url"], session=session, min_delay=delay)
-    if html == None: 
-        await error_queue.put({**article, "error_type": "http", "error": "html_none"})
-        return
     if isinstance(html, aiohttp.ClientResponseError): 
         await error_queue.put({**article, "error_type": "http", "error": {"status_code": html.status, "message": html.message}})
         return
-
-    assert isinstance(html, str)
-
-    ## grabs our loop set up back in main()
-    loop = asyncio.get_running_loop()
-    ## runs our synchronous function w/ our pool
-    result = await loop.run_in_executor(pool, process_html, html)
+    elif not isinstance(html, str): 
+        await error_queue.put({**article, "error_type": "http", "error": "html_none"})
+        return
+    
+    try:
+        ## grabs our loop set up back in main()
+        loop = asyncio.get_running_loop()
+        ## runs our synchronous function w/ our pool
+        result = await loop.run_in_executor(pool, process_html, html)
+    except Exception as e:
+        await error_queue.put({**article, "error_type": "processing", "error": str(e)})
+        return
 
     if result["text"]:
         just_text = {**article, "text": result["text"]}
@@ -124,9 +126,9 @@ async def fetch_process_write(article: dict, session: aiohttp.ClientSession, poo
         del result["ok"]
         result = article | result
         await writer_queue.put(result)
-
+        
     else: 
-        del result["ok"]
+        if result["ok"] != None: del result["ok"]
         result = article | result
         await error_queue.put(result)
 

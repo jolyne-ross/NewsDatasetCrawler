@@ -76,7 +76,7 @@ def sentiment_measures(
         doc,
         entities: list[dict],
         keywords: list[dict],
-        threshold=0.25, strong_threshold=0.5, neg_pos_threshold=0.05, neu_threshold=0.75,  fact_threshold=0.25,
+        threshold=0.25, strong_threshold=0.5, neg_pos_threshold=0.05, neu_threshold=0.75,  fact_threshold=0.15,
     ):
     def _safe_stdev(values: list):
         return statistics.stdev(values) if len(values) >= 2 else 0.0
@@ -335,7 +335,6 @@ def nlp_pipeline(clean_text: str) -> dict:
         **sentiment_report,
     }
 
-
 ## clean text w/ trafilature (entry point); mainly seperating this so i can create a test driver for the NLP Segment
 def process_html(html: str):
     ## raw retrieval && error handling
@@ -360,9 +359,28 @@ def process_html(html: str):
         "error": "text_none"
     }
 
+    if not isinstance(data.text, str): return {
+        "ok": False,
+        "error_type": "extraction",
+        "error": "text_not_str"
+    }
+
     ## normalize unicode and replace any whitespace w/ a single space
-    clean_text = normalize_unicode(data.text)
-    clean_text = re.sub(r"\s+", " ", clean_text).strip()
+    try:
+        clean_text = normalize_unicode(data.text)
+        clean_text = re.sub(r"\s+", " ", clean_text).strip()
+    except Exception as e: return {
+        "ok": False,
+        "error_type": "normalizing",
+        "error": str(e),
+        "text": clean_text if isinstance(clean_text, str) else None
+    }
+
+    if not isinstance(data.text, str): return {
+        "ok": False,
+        "error_type": "normalizing",
+        "error": "text_not_str"
+    }
 
     ## call nlp pipeline
     try:
@@ -370,23 +388,29 @@ def process_html(html: str):
     except Exception as e:
         return {
             "ok": False,
-            "error_ype": "nlp_pipe",
+            "error_type": "nlp_pipe",
             "error": str(e),
             "text": clean_text
         }
 
+    author = ""
+    if data.author is None:
+        author =  ""
+    if isinstance(data.author, str):
+        author =  data.author.strip()
+
+    # a list of authors → join strings
+    if isinstance(data.author, list):
+        try:
+            good = [x.strip() for x in data.author if isinstance(x, str)]
+            author = ", ".join(good)
+        except Exception:
+            author =  ""
+
+
     ## return dict
     return {
-        "trafilatura_data": {
-            "site_name": data.sitename or "",
-            "author": data.author or "",
-            "categories": data.categories or "",
-            "tags": data.tags or "",
-            "fingerprint": data.fingerprint or "",
-            "license": data.license or "",
-            "comments": data.comments or "",
-            "description": data.description or ""
-        },
+        "author": author,
         "text": clean_text,
         **results
     }
