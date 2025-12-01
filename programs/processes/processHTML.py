@@ -72,6 +72,31 @@ def extract_entities(ents, labels: list[str], max_entities: int | None = None):
         "sentiment_list": []
     } for (text, label), count in freq.most_common(max_entities)]
 
+MANUAL_KEYWORDS = [
+    "transgender", "trans", "nonbinary", "non-binary", "enby", "transition",
+    "transitioning", "detransition", "gender", "identity", "pronoun",
+    "misgender", "deadname", "transphobia", "transphobic", "intersex",
+    "genderfluid", "genderqueer", "agender", "bigender", "mtf", "ftm",
+    "bind", "tuck", "hormone", "puberty", "dysphoria", "cisgender", "cis",
+    "transfem", "transmasc", "transsexual", "transvestite", "tranny"
+]
+
+FLAGGED_PHRASES = [
+    "biological male", "biological female", "gender ideology", "woke agenda",
+    "woke ideology", "men in women's sports", "pronoun police", 
+    "sex change surgery", "born a man", "born a woman", "real woman",
+    "real man", "trans agenda", "radical gender", "grooming children"
+]
+
+TOPIC_CLUSTERS = {
+    "healthcare": ["hormone", "puberty", "transition", "surgery", "doctor", "dysphoria", "care", "clinic"],
+    "politics": ["bill", "legislation", "senate", "policy", "law", "ban"],
+    "violence": ["attack", "murder", "violence", "assault", "crime", "hate"],
+    "media_culture": ["tv", "actor", "award", "ad", "backlash", "boycott"],
+    "education": ["school", "curriculum", "teacher", "book", "library"],
+    "sports": ["athlete", "olympics", "compete", "team", "ban", "fairness"]
+}
+
 def sentiment_measures(
         doc,
         entities: list[dict],
@@ -95,16 +120,45 @@ def sentiment_measures(
     weighted_pos_len = {"sum": 0.0, "weight_sum": 0.0} ## (sum, weights)
 
     balance = {"list": [], "sum": 0.0} ## (list, sum)
+    skew = {"list": [], "sum": 0.0} ## (list, sum)
 
+    '''
     sent_default_signals = {"neg": 0, "neu": 0, "pos": 0} ## (negs, neus, poss); measure of how many sentences meet thresholds thresholds
     sent_strong_signals = {"neg": 0, "pos": 0} ## (negs, poss); measure of how many sentences meet strong compond thresholds
 
     component_signals = {"neg": 0, "neu": 0, "pos": 0} ## (negs, neus, poss); measure of how many sentences meet component thresholds
     factual_signals = {"neg": 0, "pos": 0} ## (negs, poss); measure of how many sentences meet factual signals
+    '''
 
     sent_list = [s for s in doc.sents if s.text.strip()]
     n = len(sent_list)
     sentence_sentiments = []
+
+    manual_keywords = [{ 
+        "keyword": kw,
+        "count": 0,
+        "sentiment_n": 0,
+        "sentiment_sum": 0.0,
+        "sentiment_list": []
+    } for kw in MANUAL_KEYWORDS]
+
+    flagged_phrases = [{
+        "phrase": phrase,
+        "count": 0,
+        "sentiment_n": 0,
+        "sentiment_sum": 0.0,
+        "sentiment_list": []
+    } for phrase in FLAGGED_PHRASES]
+
+    topic_clusters = [{
+        "topic": topic,
+        "keywords": kw,
+        "count": 0,
+        "sentiment_n": 0,
+        "sentiment_sum": 0.0,
+        "sentiment_list": [],
+        "temp_count": 0
+    } for topic, kw in TOPIC_CLUSTERS.items()]
 
     if n <= 0: return {"ok": False, "error_type": "nlp", "error": "empty_doc"}
 
@@ -112,7 +166,6 @@ def sentiment_measures(
         if not s.text.strip(): continue
         sents = _SENTIMENT.polarity_scores(s.text.strip())
         l = len(s)
-        sentence_sentiments.append({"sentence": s.text.strip(), **sents})
 
         neg, neu, pos, comp = sents.values()
         for j, key in enumerate(["neg", "neu", "pos"]): component_sums[j] += sents[key]
@@ -154,8 +207,13 @@ def sentiment_measures(
         balance["list"].append(balance_score)
         balance["sum"] += balance_score
 
+        ## skew score (pos component - neg component)
+        skew_score = pos-neg
+        skew["list"].append(skew_score)
+        skew["sum"] += skew_score
+
         ## signal detection (just sorting into various bins)
-        if comp <= -threshold: 
+        '''if comp <= -threshold: 
             sent_default_signals["neg"] += 1
             if comp <= -strong_threshold: sent_strong_signals["neg"] += 1
 
@@ -170,9 +228,11 @@ def sentiment_measures(
         if neu > neu_threshold: component_signals["neu"] += 1
 
         if neg >= fact_threshold and comp > -threshold: factual_signals["neg"] += 1
-        if pos >= fact_threshold and comp < threshold: factual_signals["pos"] += 1
+        if pos >= fact_threshold and comp < threshold: factual_signals["pos"] += 1'''
 
         ## keyword and entity summation
+        lemmas = [t.lemma_.lower() for t in s if t.is_alpha]
+
         if entities:
             for ent in entities:
                 if ent["entity"].lower() in s.text.lower():
@@ -181,13 +241,44 @@ def sentiment_measures(
                     ent["sentiment_list"].append(comp)
         
         if keywords:
-            lemmas = [t.lemma_.lower() for t in s if t.is_alpha]
             for kw in keywords:
                 if kw["keyword"] in lemmas:
                     kw["sentiment_sum"] += comp
                     kw["sentiment_n"] += 1
                     kw["sentiment_list"].append(comp)
+        
+        if MANUAL_KEYWORDS:
+            for kw in manual_keywords:
+                count = sum([1 if kw["keyword"] in l else 0 for l in lemmas])
+                kw["count"] += count
+                if count>0:
+                    kw["sentiment_sum"] += comp
+                    kw["sentiment_n"] += 1
+                    kw["sentiment_list"].append(comp)
+        
+        if FLAGGED_PHRASES:
+            for phrase in flagged_phrases:
+                if phrase["phrase"] in s.text.lower():
+                    phrase["count"] += 1
+                    phrase["sentiment_sum"] += comp
+                    phrase["sentiment_n"] += 1
+                    phrase["sentiment_list"].append(comp)
+        
+        sentence_topic = ""
+        if TOPIC_CLUSTERS:
+            for topic in topic_clusters:
+                topic["temp_count"] = sum([1 if l in topic["keywords"] else 0 for l in lemmas])
+                if topic["topic"] == "politics": sum([1 if ent.label_ == "LAW" else 0 for ent in s.ents])
+            
+            largest = topic_clusters[0]
+            for topic in topic_clusters:
+                if topic["temp_count"] > largest["temp_count"]: largest = topic
+            largest["count"] += 1
+            largest["sentiment_sum"] += comp
+            largest["sentiment_list"].append(comp)
+            sentence_topic = largest["topic"]
 
+        sentence_sentiments.append({"sentence": s.text.strip(), "topic": sentence_topic, **sents})
 
     for ent in entities:
         if ent["sentiment_n"] > 0: 
@@ -200,6 +291,7 @@ def sentiment_measures(
         else: 
             ent["sentiment_avg"] = 0
             del ent["sentiment_sum"], ent["sentiment_n"]
+
     for kw in keywords:
         if kw["sentiment_n"] > 0: 
             kw["sentiment_avg"] = kw["sentiment_sum"]/kw["sentiment_n"]
@@ -212,6 +304,76 @@ def sentiment_measures(
             kw["sentiment_avg"] = 0
             del kw["sentiment_sum"], kw["sentiment_n"]
 
+    manual_keywords_filtered = []
+    for kw in manual_keywords:
+        if kw["sentiment_n"] > 0:
+            kw["sentiment_avg"] = kw["sentiment_sum"] / kw["sentiment_n"]
+            kw["sentiment_sd"] = _safe_stdev(kw["sentiment_list"])
+            kw["sentiment_min"] = min(kw["sentiment_list"])
+            kw["sentiment_max"] = max(kw["sentiment_list"])
+            kw["sentiment_median"] = statistics.median(kw["sentiment_list"])
+            del kw["sentiment_sum"], kw["sentiment_n"]
+            manual_keywords_filtered.append(kw)
+    manual_keywords = manual_keywords_filtered
+
+    if len(manual_keywords)==0: manual_keywords = [{
+        "keyword": "",
+        "count": -1,
+        "sentiment_avg": 0.0,
+        "sentiment_sd": 0.0,
+        "sentiment_min": 0.0,
+        "sentiment_max": 0.0,
+        "sentiment_median": 0.0,
+        "sentiment_list": [0.0]
+    }]
+
+    new_phrases = []
+    for phrase in flagged_phrases:
+        if phrase["sentiment_n"] > 0:
+            phrase["sentiment_avg"] = phrase["sentiment_sum"] / phrase["sentiment_n"]
+            phrase["sentiment_sd"] = _safe_stdev(phrase["sentiment_list"])
+            phrase["sentiment_min"] = min(phrase["sentiment_list"])
+            phrase["sentiment_max"] = max(phrase["sentiment_list"])
+            phrase["sentiment_median"] = statistics.median(phrase["sentiment_list"])
+            del phrase["sentiment_sum"], phrase["sentiment_n"]
+            new_phrases.append(phrase)
+    flagged_phrases = new_phrases
+
+    if len(flagged_phrases)==0: flagged_phrases = [{
+        "phrase": "",
+        "count": -1,
+        "sentiment_avg": 0.0,
+        "sentiment_sd": 0.0,
+        "sentiment_min": 0.0,
+        "sentiment_max": 0.0,
+        "sentiment_median": 0.0,
+        "sentiment_list": [0.0]
+    }]
+        
+    topic_clusters_filtered = []
+    for topic in topic_clusters:
+        if topic["count"] > 0:
+            topic["sentiment_avg"] = topic["sentiment_sum"] / topic["count"]
+            topic["sentiment_sd"] = _safe_stdev(topic["sentiment_list"])
+            topic["sentiment_min"] = min(topic["sentiment_list"])
+            topic["sentiment_max"] = max(topic["sentiment_list"])
+            topic["sentiment_median"] = statistics.median(topic["sentiment_list"])
+            del topic["sentiment_sum"]
+            topic_clusters_filtered.append(topic)
+
+    topic_clusters = topic_clusters_filtered
+
+    if len(topic_clusters)==0: topic_clusters = [{
+        "topic": "",
+        "keywords": [""],
+        "count": -1,
+        "sentiment_avg": 0.0,
+        "sentiment_sd": 0.0,
+        "sentiment_min": 0.0,
+        "sentiment_max": 0.0,
+        "sentiment_median": 0.0,
+        "sentiment_list": [0.0],
+    }]
 
     return {
         "ok": True,
@@ -282,29 +444,19 @@ def sentiment_measures(
             "median": statistics.median(balance["list"]),
         },
 
-        "neg_signals": {
-            "ratio": sent_default_signals["neg"]/n,
-            "strong_ratio": sent_strong_signals["neg"]/n,
-            "factual_ratio": factual_signals["neg"]/n,
-            "density": component_signals["neg"]/n
-        },
-
-        "pos_signals": {
-            "ratio": sent_default_signals["pos"]/n,
-            "strong_ratio": sent_strong_signals["pos"]/n,
-            "factual_ratio": factual_signals["pos"]/n,
-            "density": component_signals["pos"]/n
-        },
-
-        "neu_signals": {
-            "ratio": sent_default_signals["neu"]/n,
-            "strong_ratio": -1,
-            "factual_ratio": -1,
-            "density": component_signals["neu"]/n
+        "skew": {
+            "avg": skew["sum"]/n,
+            "sd": _safe_stdev(skew["list"]),
+            "min": min(skew["list"]),
+            "max": max(skew["list"]),
+            "median": statistics.median(skew["list"]),
         },
 
         "keywords": keywords,
         "entities": entities,
+        "manual_keywords": manual_keywords,
+        "flagged_phrases": flagged_phrases,
+        "topic_clusters": topic_clusters
     }
 
 ## cpu NLP Pipeline
