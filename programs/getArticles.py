@@ -21,28 +21,55 @@ HEADERS = {
 last_request_claim = {}
 ## simple html fetch w/ rate limiting
 async def fetch_html(url: str, domain: str, session: aiohttp.ClientSession, min_delay: float):
-    if min_delay>0:
+    while True and min_delay>0:
         now = time.monotonic()
         last = last_request_claim.get(domain, 0)
 
         wait_time = last + min_delay - now
         if wait_time > 0: await asyncio.sleep(wait_time)
-
+        else: break
+    
     last_request_claim[domain] = time.monotonic()
+
     try:
-        async with session.get(url, timeout=10.0, headers=HEADERS) as resp:
+        resp = await session.get(url, timeout=20.0, headers=HEADERS)
+    except Exception as e:
+        print(f"[ERROR] on session: {e}")
+        return e
+
+    try:
+        async with resp:
             resp.raise_for_status()
             print(f"fetched: {url}")
-            return await resp.text()
+            raw = await resp.read()
+            try:
+                return raw.decode(resp.charset or "utf-8")
+            except UnicodeDecodeError as e:
+                for enc in ("utf-8-sig", "latin-1", "windows-1252"):
+                    try:
+                        return raw.decode(enc)
+                    except UnicodeDecodeError:
+                        pass
+                return e
     except aiohttp.ClientResponseError as e:
         print(f"[ERROR] on fetch: {e}")
         return e
+    except asyncio.TimeoutError as e:
+        print(f"[ERROR] timeout: {url}")
+        return e
+    except Exception as e:
+        print(f"[ERROR] generic on fetch: {str(e)}")
 
 ## writer task
-async def writer_task(output_path: str, file_name: str, queue: asyncio.Queue):
+async def writer_task(output_path: str, file_name: str, queue: asyncio.Queue, write: bool = True):
+    while not write:
+        item = await queue.get()
+        if item == None: break
+        continue
+
     os.makedirs(output_path, exist_ok=True)
     async with aiofiles.open(os.path.join(output_path, file_name), "a") as file:
-        while True:
+        while write:
             item = await queue.get()
             if item == None: break
 
@@ -73,30 +100,38 @@ async def writer_task_parquet(output_path: str, file_name: str, queue: asyncio.Q
     ## set up task
     os.makedirs(output_path, exist_ok=True)
     parquet_path = os.path.join(output_path, file_name)
+    tmp_path = parquet_path + ".tmp"
     buffer = []
     schema = None
-    writer = None
+    writer: pq.ParquetWriter| None = None
 
     def _write_chunk():
-        nonlocal writer, buffer
+        nonlocal writer, buffer, schema
         if not buffer: return
 
         table = pa.Table.from_pylist(buffer, schema=schema)
-        if writer == None: writer = pq.ParquetWriter(parquet_path, schema, use_dictionary=True, compression="SNAPPY")
+        if writer == None: writer = pq.ParquetWriter(tmp_path, schema, use_dictionary=True, compression="SNAPPY")
         writer.write_table(table)
         buffer = []
 
-    while True:
-        row = await queue.get()
-        if row == None: break ## shutdown code
+    loop = asyncio.get_running_loop()
 
-        buffer.append(normalize_row(row))
-        if schema == None: schema = pa.Table.from_pylist([buffer[0]]).schema
+    try:
+        while True:
+            row = await queue.get()
+            if row == None: break ## shutdown code
 
-        if len(buffer) >= flush_every: _write_chunk()
+            buffer.append(normalize_row(row))
+            if schema == None: schema = pa.Table.from_pylist([buffer[0]]).schema
+
+            if len(buffer) >= flush_every:await loop.run_in_executor(None, _write_chunk)
     
-    if buffer: _write_chunk()
-    if writer: writer.close()
+        if buffer: await loop.run_in_executor(None, _write_chunk)
+
+    finally:
+        if writer: writer.close()
+        if os.path.exists(tmp_path): os.replace(tmp_path, parquet_path)
+        
 
 ## i/o & cpu controller function
 async def fetch_process_write(article: dict, session: aiohttp.ClientSession, pool: ProcessPoolExecutor, writer_queue: asyncio.Queue, error_queue: asyncio.Queue, text_queue: asyncio.Queue, delay: float):
@@ -104,6 +139,15 @@ async def fetch_process_write(article: dict, session: aiohttp.ClientSession, poo
     html = await fetch_html(url=article["url"], domain=article["media_url"], session=session, min_delay=delay)
     if isinstance(html, aiohttp.ClientResponseError): 
         await error_queue.put({**article, "error_type": "http", "error": {"status_code": html.status, "message": html.message}})
+        return
+    elif isinstance(html, UnicodeDecodeError):
+        await error_queue.put({**article, "error_type": "decode", "error": str(html)})
+        return
+    elif isinstance(html, asyncio.TimeoutError): 
+        await error_queue.put({**article, "error_type": "timeout", "error": str(html)})
+        return
+    elif isinstance(html, Exception):
+        await error_queue.put({**article, "error_type": "connection", "error": str(html)})
         return
     elif not isinstance(html, str): 
         await error_queue.put({**article, "error_type": "http", "error": "html_none"})
@@ -113,22 +157,23 @@ async def fetch_process_write(article: dict, session: aiohttp.ClientSession, poo
         ## grabs our loop set up back in main()
         loop = asyncio.get_running_loop()
         ## runs our synchronous function w/ our pool
-        result = await loop.run_in_executor(pool, process_html, html)
+        result = await loop.run_in_executor(pool, process_html, html, article["title"])
     except Exception as e:
         await error_queue.put({**article, "error_type": "processing", "error": str(e)})
         return
 
-    if result["text"]:
+    if result.get("text"):
         just_text = {**article, "text": result["text"]}
         await text_queue.put(just_text)
 
-    if result["ok"]: 
+    if result.get("ok"): 
         del result["ok"]
         result = article | result
         await writer_queue.put(result)
         
     else: 
-        if result["ok"] != None: del result["ok"]
+        if result.get("ok") != None: del result["ok"]
+        if result.get("text") != None: del result["text"]
         result = article | result
         await error_queue.put(result)
 
@@ -143,10 +188,10 @@ async def main_async(args):
     articles = data.to_dict("records")
 
     writer_queue = asyncio.Queue() ## refresh writer queue
-    writer = asyncio.create_task(writer_task_parquet(args.output, "output.parquet", writer_queue)) ## set up task
+    writer = asyncio.create_task(writer_task_parquet(args.output, "output.parquet", writer_queue, args.flush)) ## set up task
 
     text_queue = asyncio.Queue()
-    text_writer = asyncio.create_task(writer_task(args.output, "cleaned_texts.jsonl", text_queue))
+    text_writer = asyncio.create_task(writer_task(args.output, "cleaned_texts.jsonl", text_queue, args.text))
 
     error_queue = asyncio.Queue()
     error_writer = asyncio.create_task(writer_task(args.output, "errors.jsonl", error_queue))
@@ -174,13 +219,14 @@ async def main_async(args):
             
             ## making running loop (this is what asyncio returns with get_running_loop())
             tasks = [semmedAsync(article) for article in articles]
-            await asyncio.gather(*tasks)
-
-    ## Puts in a final shutdown signal for the writers (None) and waits for the task to fully finish
-    await asyncio.gather(writer_queue.put(None), error_queue.put(None), text_queue.put(None))
-    await asyncio.gather(writer, error_writer, text_writer)
+            try:
+                await asyncio.gather(*tasks)
+            finally:
+                ## Puts in a final shutdown signal for the writers (None) and waits for the task to fully finish
+                await asyncio.gather(writer_queue.put(None), error_queue.put(None), text_queue.put(None))
+                await asyncio.gather(asyncio.shield(writer), error_writer, text_writer)
     print(f"[DONE]")
 
-def main(args, callback):
+def main(args):
     if platform.system() == "Linux": preload_models()
     asyncio.run(main_async(args))
