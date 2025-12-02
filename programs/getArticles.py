@@ -32,7 +32,7 @@ async def fetch_html(url: str, domain: str, session: aiohttp.ClientSession, min_
     last_request_claim[domain] = time.monotonic()
 
     try:
-        resp = await session.get(url, timeout=30.0, headers=HEADERS)
+        resp = await session.get(url, timeout=20.0, headers=HEADERS)
     except Exception as e:
         print(f"[ERROR] on session: {e}")
         return e
@@ -41,8 +41,8 @@ async def fetch_html(url: str, domain: str, session: aiohttp.ClientSession, min_
         async with resp:
             resp.raise_for_status()
             print(f"fetched: {url}")
+            raw = await resp.read()
             try:
-                raw = await resp.read()
                 return raw.decode(resp.charset or "utf-8")
             except UnicodeDecodeError as e:
                 for enc in ("utf-8-sig", "latin-1", "windows-1252"):
@@ -51,11 +51,14 @@ async def fetch_html(url: str, domain: str, session: aiohttp.ClientSession, min_
                     except UnicodeDecodeError:
                         pass
                 return e
-            except asyncio.TimeoutError as e:
-                return e
     except aiohttp.ClientResponseError as e:
         print(f"[ERROR] on fetch: {e}")
         return e
+    except asyncio.TimeoutError as e:
+        print(f"[ERROR] timeout: {url}")
+        return e
+    except Exception as e:
+        print(f"[ERROR] generic on fetch: {str(e)}")
 
 ## writer task
 async def writer_task(output_path: str, file_name: str, queue: asyncio.Queue, write: bool = True):
@@ -141,7 +144,7 @@ async def fetch_process_write(article: dict, session: aiohttp.ClientSession, poo
         await error_queue.put({**article, "error_type": "decode", "error": str(html)})
         return
     elif isinstance(html, asyncio.TimeoutError): 
-        await error_queue.put({**article, "error_type": "timeout", "error": str(e)})
+        await error_queue.put({**article, "error_type": "timeout", "error": str(html)})
         return
     elif isinstance(html, Exception):
         await error_queue.put({**article, "error_type": "connection", "error": str(html)})
