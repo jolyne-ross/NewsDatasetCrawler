@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from sys import exit
-from programs import csvManip, getArticles
+from programs import csvManip, getArticles, report
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -47,7 +47,13 @@ def build_parser():
     writer_args.add_argument("-t", "--text", default=True, type=bool, help="Whether not to write cleaned text to its own file (default: True)")
     writer_args.add_argument("-f", "--flush", default=100, type=int, help="The # of rows to trigger flushing the writing buffer (default: 100)")
 
-    p_get_articles.set_defaults(func=getArticles.main, callback=None)
+    p_get_articles.set_defaults(func=getArticles.main)
+
+    p_report = subparsers.add_parser("report", help="Generate a plot report based off of the parquet file from get-articles")
+    p_report.add_argument("-i", "--input", required=True, help="Parquet file to read from")
+    p_report.add_argument("-o", "--output", required=True, help="output dir to write report images too")
+
+    p_report.set_defaults(func=report.main)
 
     return parser
 
