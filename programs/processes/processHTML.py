@@ -101,12 +101,13 @@ def sentiment_measures(
         doc,
         entities: list[dict],
         keywords: list[dict],
-        threshold=0.25, strong_threshold=0.5, neg_pos_threshold=0.05, neu_threshold=0.75,  fact_threshold=0.15,
+        title: str
     ):
     def _safe_stdev(values: list):
         return statistics.stdev(values) if len(values) >= 2 else 0.0
     
     doc_sentiment = _SENTIMENT.polarity_scores(doc.text)
+    title_sentiment = _SENTIMENT.polarity_scores(title)
 
     component_sums = [0.0, 0.0, 0.0] ## [neg, neu, pos]
 
@@ -378,6 +379,7 @@ def sentiment_measures(
     return {
         "ok": True,
         "doc_sentiment": doc_sentiment,
+        "title_sentiment": title_sentiment,
         "sentence_sentiments": sentence_sentiments,
 
         "neg": {
@@ -460,8 +462,8 @@ def sentiment_measures(
     }
 
 ## cpu NLP Pipeline
-def nlp_pipeline(clean_text: str) -> dict:
-    print(f"[WORKER {current_process().name:<14} PROCESS: {current_process().pid}] Analyzing: {clean_text[:60]}...")
+def nlp_pipeline(clean_text: str, title: str) -> dict:
+    print(f"[WORKER {current_process().name:<14} PROCESS: {current_process().pid}] NLP: {title}")
     doc = NLP(clean_text)
 
     tokens = [{
@@ -480,6 +482,7 @@ def nlp_pipeline(clean_text: str) -> dict:
         doc=doc,
         entities=entities,
         keywords=keywords,
+        title=title
     )
 
     return {
@@ -488,7 +491,9 @@ def nlp_pipeline(clean_text: str) -> dict:
     }
 
 ## clean text w/ trafilature (entry point); mainly seperating this so i can create a test driver for the NLP Segment
-def process_html(html: str):
+def process_html(html: str, title: str):
+    print(f"[WORKER {current_process().name:<14} PROCESS: {current_process().pid}] EXTRACTION: {title}")
+
     ## raw retrieval && error handling
     try:
         data = bare_extraction(filecontent=html, with_metadata=True)
@@ -521,6 +526,9 @@ def process_html(html: str):
     try:
         clean_text = normalize_unicode(data.text)
         clean_text = re.sub(r"\s+", " ", clean_text).strip()
+
+        clean_title = normalize_unicode(title)
+        clean_title = re.sub(r"\s+", " ", clean_title).strip()
     except Exception as e: return {
         "ok": False,
         "error_type": "normalizing",
@@ -536,7 +544,7 @@ def process_html(html: str):
 
     ## call nlp pipeline
     try:
-        results = nlp_pipeline(clean_text=clean_text)
+        results = nlp_pipeline(clean_text=clean_text, title=clean_title)
     except Exception as e:
         return {
             "ok": False,

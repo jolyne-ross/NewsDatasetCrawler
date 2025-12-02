@@ -39,10 +39,15 @@ async def fetch_html(url: str, domain: str, session: aiohttp.ClientSession, min_
         return e
 
 ## writer task
-async def writer_task(output_path: str, file_name: str, queue: asyncio.Queue):
+async def writer_task(output_path: str, file_name: str, queue: asyncio.Queue, write: bool = True):
+    while not write:
+        item = await queue.get()
+        if item == None: break
+        continue
+
     os.makedirs(output_path, exist_ok=True)
     async with aiofiles.open(os.path.join(output_path, file_name), "a") as file:
-        while True:
+        while write:
             item = await queue.get()
             if item == None: break
 
@@ -113,22 +118,23 @@ async def fetch_process_write(article: dict, session: aiohttp.ClientSession, poo
         ## grabs our loop set up back in main()
         loop = asyncio.get_running_loop()
         ## runs our synchronous function w/ our pool
-        result = await loop.run_in_executor(pool, process_html, html)
+        result = await loop.run_in_executor(pool, process_html, html, article["title"])
     except Exception as e:
         await error_queue.put({**article, "error_type": "processing", "error": str(e)})
         return
 
-    if result["text"]:
+    if result.get("text"):
         just_text = {**article, "text": result["text"]}
         await text_queue.put(just_text)
 
-    if result["ok"]: 
+    if result.get("ok"): 
         del result["ok"]
         result = article | result
         await writer_queue.put(result)
         
     else: 
-        if result["ok"] != None: del result["ok"]
+        if result.get("ok") != None: del result["ok"]
+        if result.get("text") != None: del result["text"]
         result = article | result
         await error_queue.put(result)
 
@@ -143,10 +149,10 @@ async def main_async(args):
     articles = data.to_dict("records")
 
     writer_queue = asyncio.Queue() ## refresh writer queue
-    writer = asyncio.create_task(writer_task_parquet(args.output, "output.parquet", writer_queue)) ## set up task
+    writer = asyncio.create_task(writer_task_parquet(args.output, "output.parquet", writer_queue, args.flush)) ## set up task
 
     text_queue = asyncio.Queue()
-    text_writer = asyncio.create_task(writer_task(args.output, "cleaned_texts.jsonl", text_queue))
+    text_writer = asyncio.create_task(writer_task(args.output, "cleaned_texts.jsonl", text_queue, args.text))
 
     error_queue = asyncio.Queue()
     error_writer = asyncio.create_task(writer_task(args.output, "errors.jsonl", error_queue))
@@ -181,6 +187,6 @@ async def main_async(args):
     await asyncio.gather(writer, error_writer, text_writer)
     print(f"[DONE]")
 
-def main(args, callback):
+def main(args):
     if platform.system() == "Linux": preload_models()
     asyncio.run(main_async(args))
