@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import pathlib
 from sys import exit
 from programs import csvManip, getArticles
 
@@ -17,10 +16,10 @@ def build_parser():
 
     ## base data manip args
     p_csv_manip = subparsers.add_parser("clean-data", help="Manipulate a Media Cloud CSV file")
-    p_csv_manip.add_argument("-i", "--input", required=True, help="Media Cloud dataset file for input", type=pathlib.Path)
+    p_csv_manip.add_argument("-i", "--input", required=True, help="Media Cloud dataset file for input")
     p_csv_manip.add_argument("-q", "--pd_query", help="The pandas style query to draw from (Default: None)")
     p_csv_manip.add_argument("--columns", nargs="+", help="Optional list of columns to keep in the output")
-    p_csv_manip.add_argument("-o", "--output", type=pathlib.Path, required=True, help="Output CSV file for the sub-sample")
+    p_csv_manip.add_argument("-o", "--output", required=True, help="Output CSV file for the sub-sample")
 
     size_group = p_csv_manip.add_mutually_exclusive_group(required=True)
     size_group.add_argument("-n", "--n-rows", type=int, help="Number of rows to sample")
@@ -33,8 +32,8 @@ def build_parser():
 
     ## getter args
     p_get_articles = subparsers.add_parser("get-articles", help="Downloads the Articles from the given URL")
-    p_get_articles.add_argument("-i", "--input", required=True, type=pathlib.Path, help="Media Cloud CSV File for input")
-    p_get_articles.add_argument("-o", "--output", required=True, type=pathlib.Path, help="Where to write output (dir)")
+    p_get_articles.add_argument("-i", "--input", required=True, help="Media Cloud CSV File for input")
+    p_get_articles.add_argument("-o", "--output", required=True, help="Where to write output (dir)")
 
     retrieval_args = p_get_articles.add_argument_group("Article Retrieval Arguments")
     retrieval_args.add_argument("-cg", "--con-gets", default=50, type=int, help="# of concurrent HTTP Get Requests from given URLs (default 50)")
