@@ -78,14 +78,16 @@ MANUAL_KEYWORDS = [
     "misgender", "deadname", "transphobia", "transphobic", "intersex",
     "genderfluid", "genderqueer", "agender", "bigender", "mtf", "ftm",
     "bind", "tuck", "hormone", "puberty", "dysphoria", "cisgender", "cis",
-    "transfem", "transmasc", "transsexual", "transvestite", "tranny"
+    "transfem", "transmasc", "transsexual", "transvestite", "tranny",
+    "transgenderism"
 ]
 
 FLAGGED_PHRASES = [
     "biological male", "biological female", "gender ideology", "woke agenda",
     "woke ideology", "men in women's sports", "pronoun police", 
     "sex change surgery", "born a man", "born a woman", "real woman",
-    "real man", "trans agenda", "radical gender", "grooming children"
+    "real man", "trans agenda", "radical gender", "grooming children",
+    "gender ideology"
 ]
 
 TOPIC_CLUSTERS = {
@@ -277,7 +279,7 @@ def sentiment_measures(
             largest["count"] += 1
             largest["sentiment_sum"] += comp
             largest["sentiment_list"].append(comp)
-            sentence_topic = largest["topic"]
+            sentence_topic = largest["topic"] if largest["temp_count"] > 2 else ""
 
         sentence_sentiments.append({"sentence": s.text.strip(), "topic": sentence_topic, **sents})
 
@@ -352,8 +354,14 @@ def sentiment_measures(
     }]
         
     topic_clusters_filtered = []
+    largest = 0
+    largest_topic = ""
     for topic in topic_clusters:
-        if topic["count"] > 0:
+        if topic["count"] > 0: 
+            if topic["count"] > largest: 
+                largest = topic["count"]
+                largest_topic = topic["topic"]
+            if topic["count"] == largest: largest_topic += ", " + topic["topic"]
             topic["sentiment_avg"] = topic["sentiment_sum"] / topic["count"]
             topic["sentiment_sd"] = _safe_stdev(topic["sentiment_list"])
             topic["sentiment_min"] = min(topic["sentiment_list"])
