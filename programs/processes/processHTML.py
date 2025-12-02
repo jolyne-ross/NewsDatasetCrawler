@@ -336,7 +336,7 @@ def nlp_pipeline(clean_text: str) -> dict:
     }
 
 ## clean text w/ trafilature (entry point); mainly seperating this so i can create a test driver for the NLP Segment
-def process_html(html: str):
+def process_html(html: str, title: str):
     ## raw retrieval && error handling
     try:
         data = bare_extraction(filecontent=html, with_metadata=True)
